@@ -28,7 +28,6 @@ from .transform import (  # isort:skip
     NoOpTransform,
     VFlipTransform,
     DistortTransform,
-    BoxJitterTransform,
     RandomSwapChannelsTransform,
     ExpandTransform,
     ExtentTransform,
@@ -39,7 +38,6 @@ from .transform import (  # isort:skip
     SolarizationTransform,
     LightningTransform,
     ComposeTransform,
-    TorchTransform,
     # LabSpaceTransform,
     PadTransform,
     FiveCropTransform,
@@ -64,7 +62,6 @@ __all__ = [
     "RandomSaturation",
     "RandomLighting",
     "RandomDistortion",
-    "RandomBoxJitter",
     "Resize",
     "ResizeShortestEdge",
     "ResizeLongestEdge",
@@ -127,10 +124,10 @@ class TransformGen(metaclass=ABCMeta):
 
     @abstractmethod
     def get_transform(self, img, annotations=None):
-        pass
+        raise NotImplementedError
 
-    def __call__(self, img, annotations=None):
-        return self.get_transform(img, annotations)(img, annotations)
+    def __call__(self, img, annotations=None, **kwargs):
+        return self.get_transform(img, annotations)(img, annotations, **kwargs)
 
     def _rand_range(self, low=1.0, high=None, size=None):
         """
@@ -210,17 +207,17 @@ class RandomFlip(TransformGen):
 
 
 @TRANSFORMS.register()
-class TorchTransformGen(TransformGen):
+class TorchTransformGen:
     """
     Wrapper transfrom of transforms in torchvision.
     It convert img (np.ndarray) to PIL image, and convert back to np.ndarray after transform.
     """
     def __init__(self, tfm):
-        super().__init__()
         self.tfm = tfm
 
-    def get_transform(self, img, annotations=None):
-        return TorchTransform(self.tfm)
+    def __call__(self, img: np.ndarray, annotations: None, **kwargs):
+        pil_image = Image.fromarray(img)
+        return np.array(self.tfm(pil_image)), annotations
 
 
 @TRANSFORMS.register()
@@ -333,25 +330,6 @@ class CenterAffine(TransformGen):
         dst[2, :] = dst[1, :] + (dst_dir[1], -dst_dir[0])
 
         return src, dst
-
-
-@TRANSFORMS.register()
-class RandomBoxJitter(TransformGen):
-    """
-    Random jitter bounding box without changing image.
-    """
-
-    def __init__(self, p: float = 0.0, ratio: int = 0):
-        """
-        Args:
-            p (float): probability of performing jitter
-            ratio (int): offsets along x and y axis in pixels.
-        """
-        super().__init__()
-        self._init(locals())
-
-    def get_transform(self, img, annotations=None):
-        return BoxJitterTransform(self.p, self.ratio)
 
 
 @TRANSFORMS.register()
@@ -1168,11 +1146,11 @@ class RepeatList(TransformGen):
     def get_transform(self, img, annotations=None):
         return ComposeTransform(self.transforms)
 
-    def __call__(self, img, annotations=None):
+    def __call__(self, img, annotations=None, **kwargs):
         repeat_imgs = []
         repeat_annotations = []
         for t in range(self.times):
-            tmp_img, tmp_anno = self.get_transform(img)(img, annotations)
+            tmp_img, tmp_anno = self.get_transform(img)(img, annotations, **kwargs)
             repeat_imgs.append(tmp_img)
             repeat_annotations.append(tmp_anno)
         repeat_imgs = np.stack(repeat_imgs, axis=0)
@@ -1197,6 +1175,6 @@ class JigsawCrop(TransformGen):
     def get_transform(self, img, annotations=None):
         return JigsawCropTransform(self.n_grid, self.img_size, self.crop_size)
 
-    def __call__(self, img, annotations=None):
-        crops, annos = self.get_transform(img)(img, annotations)
+    def __call__(self, img, annotations=None, **kwargs):
+        crops, annos = self.get_transform(img)(img, annotations, **kwargs)
         return np.stack(crops, axis=0), annos

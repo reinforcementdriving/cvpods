@@ -15,6 +15,7 @@ import pycocotools.mask as mask_util
 import torch
 import torchvision.transforms as transforms
 
+import cvpods
 from cvpods.structures import BoxMode
 
 from .transform_util import to_float_tensor, to_numpy
@@ -33,12 +34,10 @@ __all__ = [
     "NoOpTransform",
     "ScaleTransform",
     "DistortTransform",
-    "BoxJitterTransform",
     "Transform",
     "TransformList",
     "ExtentTransform",
     "ResizeTransform",
-    "TorchTransform",
     # Transform used in ssl
     "LightningTransform",
     "GaussianBlurTransform",
@@ -172,7 +171,7 @@ class Transform(metaclass=ABCMeta):
         """
         return [self.apply_coords(p) for p in polygons]
 
-    def __call__(self, image, annotations=None):
+    def __call__(self, image, annotations=None, **kwargs):
         """
         Apply transfrom to images and annotations (if exist)
         """
@@ -182,9 +181,8 @@ class Transform(metaclass=ABCMeta):
         if annotations is not None:
             for annotation in annotations:
                 if "bbox" in annotation:
-                    bbox = BoxMode.convert(annotation["bbox"],
-                                           annotation["bbox_mode"],
-                                           BoxMode.XYXY_ABS)
+                    bbox = BoxMode.convert(
+                        annotation["bbox"], annotation["bbox_mode"], BoxMode.XYXY_ABS)
                     # Note that bbox is 1d (per-instance bounding box)
                     annotation["bbox"] = self.apply_box([bbox])[0]
                     annotation["bbox_mode"] = BoxMode.XYXY_ABS
@@ -196,8 +194,7 @@ class Transform(metaclass=ABCMeta):
                         # polygons
                         polygons = [np.asarray(p).reshape(-1, 2) for p in segm]
                         annotation["segmentation"] = [
-                            p.reshape(-1)
-                            for p in self.apply_polygons(polygons)
+                            p.reshape(-1) for p in self.apply_polygons(polygons)
                         ]
                     elif isinstance(segm, dict):
                         # RLE
@@ -223,9 +220,21 @@ class Transform(metaclass=ABCMeta):
                     """
                     # (N*3,) -> (N, 3)
                     keypoints = annotation["keypoints"]
-                    keypoints = np.asarray(keypoints,
-                                           dtype="float64").reshape(-1, 3)
+                    keypoints = np.asarray(keypoints, dtype="float64").reshape(-1, 3)
                     keypoints[:, :2] = self.apply_coords(keypoints[:, :2])
+
+                    # This assumes that HorizFlipTransform is the only one that does flip
+                    do_hflip = isinstance(self, cvpods.data.transforms.transform.HFlipTransform)
+
+                    # Alternative way: check if probe points was horizontally flipped.
+                    # probe = np.asarray([[0.0, 0.0], [image_width, 0.0]])
+                    # probe_aug = transforms.apply_coords(probe.copy())
+                    # do_hflip = np.sign(probe[1][0] - probe[0][0]) != np.sign(probe_aug[1][0] - probe_aug[0][0])  # noqa
+
+                    # If flipped, swap each keypoint with its opposite-handed equivalent
+                    if do_hflip:
+                        if "keypoint_hflip_indices" in kwargs:
+                            keypoints = keypoints[kwargs["keypoint_hflip_indices"], :]
 
                     # Maintain COCO convention that if visibility == 0, then x, y = 0
                     # TODO may need to reset visibility for cropped keypoints,
@@ -306,29 +315,13 @@ class ComposeTransform(object):
             return False
         return self.transforms == other.transforms
 
-    def __call__(self, img, annotations=None):
+    def __call__(self, img, annotations=None, **kwargs):
         for tfm in self.transforms:
-            img, annotations = tfm(img, annotations)
+            img, annotations = tfm(img, annotations, **kwargs)
         return img, annotations
 
     def __repr__(self):
         return "".join([tfm for tfm in self.transforms])
-
-
-class TorchTransform(Transform):
-    """
-    Convert a transform from torchvision into cvpods-fashion.
-    """
-    def __init__(self, tfm):
-        super().__init__()
-        self.tfm = tfm
-
-    def apply_image(self, img: np.ndarray) -> np.ndarray:
-        pil_image = Image.fromarray(img)
-        return np.array(self.tfm(pil_image))
-
-    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
-        return coords
 
 
 # TODO: Deprecated
@@ -543,23 +536,6 @@ class AffineTransform(Transform):
         return coords
 
 
-# Remove it later
-"""
-class ColorTransform(Transform):
-
-    def __init__(self, src, dst, shape, ):
-        super().__init__()
-        affine = cv2.getAffineTransform(np.float32(src), np.float32(dst))
-        self._set_attributes(locals())
-
-    def apply_image(self, img: np.ndarray) -> np.ndarray:
-        return img
-
-    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
-        return coords
-"""
-
-
 class RotationTransform(Transform):
     """
     This method returns a copy of this image, rotated the given
@@ -746,37 +722,6 @@ class VFlipTransform(Transform):
         return coords
 
 
-class BoxJitterTransform(Transform):
-    """
-    A transofrm that perform gt box jittering without changing the image.
-    """
-    def __init__(self, p: float = 0.0, ratio: int = 0):
-        super().__init__()
-        self._set_attributes(locals())
-
-    def apply_image(self, img: np.ndarray) -> np.ndarray:
-        return img
-
-    def apply_coords(self, coords: np.ndarray) -> np.ndarray:
-        """
-        Jitter the coordinates.
-
-        Args:
-            coords (ndarray): floating point array of shape Nx2. Each row is
-                (x, y).
-        Returns:
-            ndarray: the jittered coordinates.
-        """
-        if np.random.random() > self.p:
-            coords = coords.reshape(-1, 4, 2)
-            for coord in coords:
-                coord[:, 0] += np.random.randint(-self.ratio, high=self.ratio)
-                coord[:, 1] += np.random.randint(-self.ratio, high=self.ratio)
-            return coords.reshape(-1, 2)
-        else:
-            return coords
-
-
 class NoOpTransform(Transform):
     """
     A transform that does nothing.
@@ -805,7 +750,7 @@ class GaussianBlurTransform(Transform):
         self._set_attributes(locals())
 
     def apply_image(self, img: np.ndarray) -> np.ndarray:
-        if np.random.random() > self.p:
+        if np.random.random() < self.p:
             sigma = random.uniform(self.sigma[0], self.sigma[1])
             img = Image.fromarray(img).filter(ImageFilter.GaussianBlur(radius=sigma))
         return np.array(img)
@@ -821,7 +766,7 @@ class SolarizationTransform(Transform):
         self.p = p
 
     def apply_image(self, img: np.ndarray) -> np.ndarray:
-        if np.random.random() > self.p:
+        if np.random.random() < self.p:
             return np.array(ImageOps.solarize(Image.fromarray(img), self.thresh))
         else:
             return img
@@ -853,7 +798,7 @@ class GaussianBlurConvTransform(Transform):
         self.tensor_to_pil = transforms.ToPILImage()
 
     def apply_image(self, img: np.ndarray) -> np.ndarray:
-        if np.random.random() > self.p:
+        if np.random.random() < self.p:
             img = self.pil_to_tensor(Image.fromarray(img)).unsqueeze(0)
 
             sigma = np.random.uniform(0.1, 2.0)

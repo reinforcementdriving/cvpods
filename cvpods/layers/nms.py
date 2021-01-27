@@ -7,10 +7,12 @@ from torchvision.ops import nms  # BC-compat
 
 from cvpods import _C
 from cvpods.layers.rotated_boxes import pairwise_iou_rotated
+from cvpods.utils.apex_wrapper import float_function
 
 ml_nms = _C.ml_nms
 
 
+@float_function
 def batched_nms(boxes, scores, idxs, iou_threshold):
     """
     Same as torchvision.ops.boxes.batched_nms, but safer.

@@ -60,20 +60,17 @@ class ImageNetDataset(BaseDataset):
             if isinstance(annos, list):
                 annos = [a for a in annos if a is not None]
 
-            if len(img.shape) == 3:
-                image_shape = img.shape[:2]  # h, w
+            # image shape: CHW / NCHW
+            # TODO: fix hack
+            if img.shape[0] == 3:  # CHW
+                dd["image"] = torch.as_tensor(np.ascontiguousarray(img))
+            elif len(img.shape) == 3 and img.shape[-1] == 3:
                 dd["image"] = torch.as_tensor(
                     np.ascontiguousarray(img.transpose(2, 0, 1)))
-            elif len(img.shape) == 4:
-                image_shape = img.shape[1:3]
+            elif len(img.shape) == 4 and img.shape[-1] == 3:
                 # NHWC -> NCHW
                 dd["image"] = torch.as_tensor(
                     np.ascontiguousarray(img.transpose(0, 3, 1, 2)))
-
-            if isinstance(annos, list) and len(annos) > 0:
-                instances = annotations_to_instances(annos, image_shape)
-                dd["instances"] = filter_empty_instances(instances)
-
             return dd
 
         if isinstance(images, dict):
@@ -111,7 +108,7 @@ class ImageNetDataset(BaseDataset):
         logger.info('{} data path: {}'.format(self.name, self.label_file))
         # Images are stored per class in subdirs (format: n<number>)
         class_ids = [k for k, v in IMAGENET_CATEGORIES.items()]
-        class_id_cont_id = {k: v[0] for k, v in IMAGENET_CATEGORIES.items()}
+        class_id_cont_id = {k: v[0] - 1 for k, v in IMAGENET_CATEGORIES.items()}
         # class_ids = sorted([
         #     f for f in os.listdir(split_path) if re.match(r'^n[0-9]+$', f)
         # ])

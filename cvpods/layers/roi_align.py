@@ -5,10 +5,12 @@ from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
 
 from cvpods import _C
+from cvpods.utils.apex_wrapper import float_function
 
 
 class _ROIAlign(Function):
     @staticmethod
+    @float_function
     def forward(ctx, input, roi, output_size, spatial_scale, sampling_ratio, aligned):
         ctx.save_for_backward(roi)
         ctx.output_size = _pair(output_size)
@@ -23,6 +25,7 @@ class _ROIAlign(Function):
 
     @staticmethod
     @once_differentiable
+    @float_function
     def backward(ctx, grad_output):
         rois, = ctx.saved_tensors
         output_size = ctx.output_size
